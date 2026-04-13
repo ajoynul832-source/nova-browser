@@ -1,4 +1,4 @@
-name: Build Flutter APK
+     name: Build Flutter APK
 
 on:
   push:
@@ -35,6 +35,33 @@ jobs:
         mv temp_project/android ./
         
         # 3. Ensure the code is in the correct lib/main.dart location
+        mkdir -p lib
+        if [ -f "flutter_app.dart" ]; then
+          mv flutter_app.dart lib/main.dart
+        fi
+        
+        # 4. webview_flutter requires Android SDK 21+. 
+        # This safely checks for both the old and new Gradle file formats!
+        if [ -f "android/app/build.gradle" ]; then
+          sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
+        elif [ -f "android/app/build.gradle.kts" ]; then
+          sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle.kts
+        fi
+        
+        # 5. Clean up the temp folder
+        rm -rf temp_project
+
+    - name: Install dependencies
+      run: flutter pub get
+
+    - name: Build APK
+      run: flutter build apk --release
+
+    - name: Upload APK Artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: nova-browser-apk
+        path: build/app/outputs/flutter-apk/app-release.apk   # 3. Ensure the code is in the correct lib/main.dart location
         mkdir -p lib
         if [ -f "flutter_app.dart" ]; then
           mv flutter_app.dart lib/main.dart
