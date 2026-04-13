@@ -1,0 +1,1060 @@
+import 'package:flutter/material.dart';
+import 'package:webview_flutter/webview_flutter.dart';
+import 'dart:ui';
+
+void main() {
+  runApp(const NovaBrowserApp());
+}
+
+class NovaBrowserApp extends StatelessWidget {
+  const NovaBrowserApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'Nova Browser',
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: const Color(0xFF0A0A0A),
+        appBarTheme: const AppBarTheme(backgroundColor: Color(0xFF0A0A0A)),
+        bottomSheetTheme: const BottomSheetThemeData(
+          backgroundColor: Color(0xFF141414),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+        ),
+      ),
+      home: const BrowserScreen(),
+    );
+  }
+}
+
+class BrowserTab {
+  final String id;
+  String url;
+  String title;
+  bool isIncognito;
+  String? splitUrl;
+  WebViewController? controller;
+  WebViewController? splitController;
+
+  BrowserTab({
+    required this.id, 
+    required this.url, 
+    required this.title, 
+    this.isIncognito = false,
+    this.splitUrl,
+  });
+}
+
+class BrowserScreen extends StatefulWidget {
+  const BrowserScreen({super.key});
+
+  @override
+  State<BrowserScreen> createState() => _BrowserScreenState();
+}
+
+class _BrowserScreenState extends State<BrowserScreen> {
+  // --- Tab Management ---
+  final List<BrowserTab> _tabs = [
+    BrowserTab(id: DateTime.now().toString(), url: '', title: 'New Tab'),
+  ];
+  int _activeTabIndex = 0;
+  bool _showTabSwitcher = false;
+
+  // --- Vault State ---
+  bool _vaultUnlocked = false;
+
+  // --- Settings State ---
+  String _searchEngine = 'DuckDuckGo';
+  String _toolbarPosition = 'bottom';
+  String _homepageWallpaper = ''; // Empty means default dark gradient
+  
+  // Privacy
+  bool _adBlockEnabled = true;
+  bool _dataSaverEnabled = false;
+  bool _blockFingerprinting = true;
+  bool _upgradeHttps = true;
+  bool _clearDataOnExit = false;
+  bool _autoRejectCookies = true;
+  
+  // Appearance
+  bool _desktopMode = false;
+  bool _nightMode = false;
+
+  final TextEditingController _urlController = TextEditingController();
+  final TextEditingController _splitUrlController = TextEditingController();
+  double _progress = 0;
+  bool _isSecure = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _initTabController(_tabs[_activeTabIndex]);
+  }
+
+  void _initTabController(BrowserTab tab) {
+    if (tab.url.isEmpty) return;
+
+    tab.controller = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0xFF0A0A0A))
+      ..setNavigationDelegate(_buildNavigationDelegate(tab))
+      ..loadRequest(Uri.parse(tab.url));
+  }
+
+  void _initSplitController(BrowserTab tab, String url) {
+    tab.splitUrl = url;
+    tab.splitController = WebViewController()
+      ..setJavaScriptMode(JavaScriptMode.unrestricted)
+      ..setBackgroundColor(const Color(0xFF0A0A0A))
+      ..setNavigationDelegate(_buildNavigationDelegate(tab, isSplit: true))
+      ..loadRequest(Uri.parse(url));
+  }
+
+  NavigationDelegate _buildNavigationDelegate(BrowserTab tab, {bool isSplit = false}) {
+    return NavigationDelegate(
+      onProgress: (int progress) {
+        if (mounted && !isSplit) setState(() => _progress = progress / 100.0);
+      },
+      onPageStarted: (String url) {
+        if (mounted && !isSplit) {
+          setState(() {
+            tab.url = url;
+            _urlController.text = _formatUrlForDisplay(url);
+            _isSecure = url.startsWith('https://');
+          });
+        }
+        _applyDataSaver(isSplit ? tab.splitController! : tab.controller!);
+      },
+      onPageFinished: (String url) async {
+        if (mounted && !isSplit) {
+          final title = await tab.controller!.getTitle();
+          setState(() {
+            _progress = 0;
+            tab.title = title ?? _formatUrlForDisplay(url);
+          });
+        }
+      },
+      onNavigationRequest: (NavigationRequest request) {
+        if (_adBlockEnabled) {
+          final adDomains = ['doubleclick.net', 'googlesyndication.com', 'adsystem.com', 'adnxs.com'];
+          if (adDomains.any((domain) => request.url.contains(domain))) {
+            debugPrint('Blocked Ad Request: \${request.url}');
+            return NavigationDecision.prevent;
+          }
+        }
+        return NavigationDecision.navigate;
+      },
+    );
+  }
+
+  void _applyDataSaver(WebViewController controller) {
+    if (_dataSaverEnabled) {
+      controller.runJavaScript('''
+        document.querySelectorAll('img').forEach(img => img.style.display = 'none');
+        document.querySelectorAll('video').forEach(vid => { vid.pause(); vid.style.display = 'none'; });
+      ''');
+    }
+  }
+
+  String _formatUrlForDisplay(String url) {
+    if (url.isEmpty) return '';
+    String display = url.replaceAll('https://', '').replaceAll('http://', '');
+    if (display.endsWith('/')) display = display.substring(0, display.length - 1);
+    return display;
+  }
+
+  void _loadUrl(String input, {bool isSplit = false}) {
+    if (input.isEmpty) return;
+    String finalUrl = input;
+    if (!input.startsWith('http://') && !input.startsWith('https://')) {
+      if (input.contains('.') && !input.contains(' ')) {
+        finalUrl = 'https://$input';
+      } else {
+        finalUrl = _searchEngine == 'Google' 
+            ? 'https://google.com/search?q=\${Uri.encodeComponent(input)}'
+            : 'https://duckduckgo.com/?q=\${Uri.encodeComponent(input)}';
+      }
+    }
+    
+    final activeTab = _tabs[_activeTabIndex];
+    
+    if (isSplit) {
+      if (activeTab.splitController == null) {
+        _initSplitController(activeTab, finalUrl);
+      } else {
+        activeTab.splitUrl = finalUrl;
+        activeTab.splitController!.loadRequest(Uri.parse(finalUrl));
+      }
+      setState(() {});
+    } else {
+      activeTab.url = finalUrl;
+      if (activeTab.controller == null) {
+        _initTabController(activeTab);
+      } else {
+        activeTab.controller!.loadRequest(Uri.parse(finalUrl));
+      }
+      setState(() {
+        _urlController.text = _formatUrlForDisplay(finalUrl);
+      });
+    }
+    FocusScope.of(context).unfocus();
+  }
+
+  void _addNewTab({bool isIncognito = false}) {
+    setState(() {
+      _tabs.add(BrowserTab(
+        id: DateTime.now().toString(), 
+        url: '', 
+        title: isIncognito ? 'Incognito Tab' : 'New Tab',
+        isIncognito: isIncognito,
+      ));
+      _activeTabIndex = _tabs.length - 1;
+      _urlController.text = '';
+      _showTabSwitcher = false;
+    });
+  }
+
+  void _closeTab(int index) {
+    setState(() {
+      _tabs.removeAt(index);
+      if (_tabs.isEmpty) {
+        _addNewTab();
+      } else if (_activeTabIndex >= _tabs.length) {
+        _activeTabIndex = _tabs.length - 1;
+      }
+      _urlController.text = _formatUrlForDisplay(_tabs[_activeTabIndex].url);
+    });
+  }
+
+  void _toggleSplitScreen() {
+    final activeTab = _tabs[_activeTabIndex];
+    setState(() {
+      if (activeTab.splitUrl != null) {
+        activeTab.splitUrl = null;
+        activeTab.splitController = null;
+      } else {
+        // Prompt for split screen URL
+        showDialog(
+          context: context,
+          builder: (context) => AlertDialog(
+            backgroundColor: const Color(0xFF141414),
+            title: const Text('Open Split Screen', style: TextStyle(color: Colors.white)),
+            content: TextField(
+              controller: _splitUrlController,
+              style: const TextStyle(color: Colors.white),
+              decoration: const InputDecoration(
+                hintText: 'Enter URL or search...',
+                hintStyle: TextStyle(color: Colors.white38),
+                enabledBorder: UnderlineInputBorder(borderSide: BorderSide(color: Colors.deepPurpleAccent)),
+              ),
+              autofocus: true,
+              onSubmitted: (val) {
+                Navigator.pop(context);
+                _loadUrl(val, isSplit: true);
+              },
+            ),
+          ),
+        );
+      }
+    });
+  }
+
+  void _openVault() {
+    if (_vaultUnlocked) {
+      // Show Vault Contents
+      showModalBottomSheet(
+        context: context,
+        backgroundColor: const Color(0xFF141414),
+        builder: (context) => Container(
+          padding: const EdgeInsets.all(24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('The Vault', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
+                  IconButton(
+                    icon: const Icon(Icons.lock_outline, color: Colors.redAccent),
+                    onPressed: () {
+                      setState(() => _vaultUnlocked = false);
+                      Navigator.pop(context);
+                    },
+                  )
+                ],
+              ),
+              const SizedBox(height: 20),
+              const Text('Secure Bookmarks', style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)),
+              ListTile(
+                leading: const Icon(Icons.bookmark, color: Colors.deepPurpleAccent),
+                title: const Text('Secret Project Notes', style: TextStyle(color: Colors.white)),
+                onTap: () {},
+              ),
+              const SizedBox(height: 20),
+              const Text('Saved Passwords', style: TextStyle(color: Colors.white54, fontWeight: FontWeight.bold)),
+              ListTile(
+                leading: const Icon(Icons.password, color: Colors.deepPurpleAccent),
+                title: const Text('Bank Login', style: TextStyle(color: Colors.white)),
+                subtitle: const Text('â€¢â€¢â€¢â€¢â€¢â€¢â€¢â€¢', style: TextStyle(color: Colors.white38)),
+              ),
+            ],
+          ),
+        ),
+      );
+    } else {
+      // Show Unlock Screen
+      showDialog(
+        context: context,
+        builder: (context) => AlertDialog(
+          backgroundColor: const Color(0xFF141414),
+          title: const Row(
+            children: [
+              Icon(Icons.lock, color: Colors.deepPurpleAccent),
+              SizedBox(width: 10),
+              Text('Unlock Vault', style: TextStyle(color: Colors.white)),
+            ],
+          ),
+          content: const Text('Enter your master PIN to access hidden bookmarks and passwords.', style: TextStyle(color: Colors.white70)),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel', style: TextStyle(color: Colors.white54)),
+            ),
+            ElevatedButton(
+              style: ElevatedButton.styleFrom(backgroundColor: Colors.deepPurpleAccent),
+              onPressed: () {
+                setState(() => _vaultUnlocked = true);
+                Navigator.pop(context);
+                _openVault();
+              },
+              child: const Text('Unlock', style: TextStyle(color: Colors.white)),
+            ),
+          ],
+        ),
+      );
+    }
+  }
+
+  // --- UI Builders ---
+
+  Widget _buildHomepage() {
+    final isIncognito = _tabs[_activeTabIndex].isIncognito;
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0A0A),
+        image: _homepageWallpaper.isNotEmpty && !isIncognito
+            ? DecorationImage(
+                image: NetworkImage(_homepageWallpaper),
+                fit: BoxFit.cover,
+                colorFilter: ColorFilter.mode(Colors.black.withOpacity(0.6), BlendMode.darken),
+              )
+            : null,
+      ),
+      width: double.infinity,
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          if (isIncognito)
+            const Icon(Icons.visibility_off, size: 64, color: Colors.redAccent)
+          else
+            ShaderMask(
+              shaderCallback: (bounds) => const LinearGradient(
+                colors: [Colors.white, Colors.white38],
+                begin: Alignment.topLeft,
+                end: Alignment.bottomRight,
+              ).createShader(bounds),
+              child: const Text(
+                'Nova.',
+                style: TextStyle(fontSize: 64, fontWeight: FontWeight.bold, color: Colors.white, letterSpacing: -2),
+              ),
+            ),
+          const SizedBox(height: 10),
+          if (isIncognito)
+            const Text('Incognito Mode', style: TextStyle(color: Colors.redAccent, fontSize: 20, fontWeight: FontWeight.bold))
+          else
+            const Text('What do you want to explore?', style: TextStyle(color: Colors.white54, fontSize: 16)),
+          
+          const SizedBox(height: 40),
+          
+          // Quick Links
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _buildQuickLink(Icons.search, 'Search', () => FocusScope.of(context).requestFocus()),
+              const SizedBox(width: 20),
+              _buildQuickLink(Icons.bookmark, 'Bookmarks', () {}),
+              const SizedBox(width: 20),
+              _buildQuickLink(Icons.lock, 'Vault', _openVault, color: _vaultUnlocked ? Colors.greenAccent : Colors.deepPurpleAccent),
+            ],
+          )
+        ],
+      ),
+    );
+  }
+
+  Widget _buildQuickLink(IconData icon, String label, VoidCallback onTap, {Color color = Colors.white70}) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: Colors.white.withOpacity(0.05),
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(color: Colors.white.withOpacity(0.1)),
+            ),
+            child: Icon(icon, color: color),
+          ),
+          const SizedBox(height: 8),
+          Text(label, style: const TextStyle(color: Colors.white54, fontSize: 12)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildTabSwitcher() {
+    return Container(
+      color: const Color(0xFF0A0A0A),
+      child: SafeArea(
+        child: Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.all(16.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  const Text('Open Tabs', style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
+                  IconButton(
+                    icon: const Icon(Icons.close, color: Colors.white),
+                    onPressed: () => setState(() => _showTabSwitcher = false),
+                  )
+                ],
+              ),
+            ),
+            Expanded(
+              child: GridView.builder(
+                padding: const EdgeInsets.all(16),
+                gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+                  crossAxisCount: 2,
+                  crossAxisSpacing: 16,
+                  mainAxisSpacing: 16,
+                  childAspectRatio: 0.75,
+                ),
+                itemCount: _tabs.length,
+                itemBuilder: (context, index) {
+                  final tab = _tabs[index];
+                  final isActive = index == _activeTabIndex;
+                  final borderColor = tab.isIncognito 
+                      ? (isActive ? Colors.redAccent : Colors.redAccent.withOpacity(0.3))
+                      : (isActive ? Colors.deepPurpleAccent : Colors.white.withOpacity(0.1));
+
+                  return GestureDetector(
+                    onTap: () {
+                      setState(() {
+                        _activeTabIndex = index;
+                        _urlController.text = _formatUrlForDisplay(tab.url);
+                        _showTabSwitcher = false;
+                      });
+                    },
+                    child: Container(
+                      decoration: BoxDecoration(
+                        color: tab.isIncognito ? Colors.redAccent.withOpacity(0.05) : Colors.white.withOpacity(0.05),
+                        borderRadius: BorderRadius.circular(20),
+                        border: Border.all(color: borderColor, width: isActive ? 2 : 1),
+                      ),
+                      child: Column(
+                        children: [
+                          Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                            decoration: BoxDecoration(
+                              color: tab.isIncognito ? Colors.redAccent.withOpacity(0.2) : Colors.black26,
+                              borderRadius: const BorderRadius.vertical(top: Radius.circular(20)),
+                            ),
+                            child: Row(
+                              children: [
+                                if (tab.isIncognito) ...[
+                                  const Icon(Icons.visibility_off, size: 12, color: Colors.redAccent),
+                                  const SizedBox(width: 4),
+                                ],
+                                Expanded(
+                                  child: Text(
+                                    tab.title,
+                                    style: TextStyle(color: tab.isIncognito ? Colors.redAccent : Colors.white, fontSize: 12),
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                ),
+                                GestureDetector(
+                                  onTap: () => _closeTab(index),
+                                  child: const Icon(Icons.close, size: 16, color: Colors.white54),
+                                ),
+                              ],
+                            ),
+                          ),
+                          Expanded(
+                            child: Center(
+                              child: Icon(
+                                tab.url.isEmpty ? Icons.home : Icons.public,
+                                size: 48,
+                                color: tab.isIncognito ? Colors.redAccent.withOpacity(0.3) : Colors.white24,
+                              ),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  );
+                },
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.all(24.0),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  FloatingActionButton.extended(
+                    heroTag: 'btn1',
+                    backgroundColor: Colors.redAccent.withOpacity(0.2),
+                    elevation: 0,
+                    onPressed: () => _addNewTab(isIncognito: true),
+                    icon: const Icon(Icons.visibility_off, color: Colors.redAccent),
+                    label: const Text('Incognito', style: TextStyle(color: Colors.redAccent)),
+                  ),
+                  const SizedBox(width: 16),
+                  FloatingActionButton(
+                    heroTag: 'btn2',
+                    backgroundColor: Colors.deepPurpleAccent,
+                    onPressed: () => _addNewTab(isIncognito: false),
+                    child: const Icon(Icons.add, color: Colors.white),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _showSettingsMenu() {
+    showModalBottomSheet(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (context) => StatefulBuilder(
+        builder: (context, setModalState) {
+          return Container(
+            height: MediaQuery.of(context).size.height * 0.9,
+            decoration: const BoxDecoration(
+              color: Color(0xFF141414),
+              borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+            ),
+            child: Column(
+              children: [
+                Container(
+                  margin: const EdgeInsets.only(top: 12, bottom: 16),
+                  width: 40,
+                  height: 4,
+                  decoration: BoxDecoration(
+                    color: Colors.white24,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
+                const Text('Full Settings', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white)),
+                const SizedBox(height: 16),
+                Expanded(
+                  child: ListView(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 8),
+                    children: [
+                      // --- Core Browser ---
+                      _buildSettingsHeader(Icons.public, 'Core Browser'),
+                      _buildSettingsSelector(
+                        icon: Icons.search,
+                        label: 'Search Engine',
+                        value: _searchEngine,
+                        options: ['Google', 'DuckDuckGo', 'Bing'],
+                        onChanged: (val) {
+                          setState(() => _searchEngine = val);
+                          setModalState(() => _searchEngine = val);
+                        },
+                      ),
+                      _buildSettingsSelector(
+                        icon: Icons.vertical_align_bottom,
+                        label: 'Toolbar Position',
+                        value: _toolbarPosition,
+                        options: ['top', 'bottom'],
+                        onChanged: (val) {
+                          setState(() => _toolbarPosition = val);
+                          setModalState(() => _toolbarPosition = val);
+                        },
+                      ),
+                      
+                      const SizedBox(height: 24),
+                      // --- Privacy & Security ---
+                      _buildSettingsHeader(Icons.shield, 'Privacy & Security'),
+                      _buildSettingsToggle(
+                        icon: Icons.block,
+                        label: 'Native Ad Blocker',
+                        description: 'Block trackers at the network level',
+                        value: _adBlockEnabled,
+                        onChanged: (val) {
+                          setState(() => _adBlockEnabled = val);
+                          setModalState(() => _adBlockEnabled = val);
+                          _tabs[_activeTabIndex].controller?.reload();
+                        },
+                      ),
+                      _buildSettingsToggle(
+                        icon: Icons.fingerprint,
+                        label: 'Block Fingerprinting',
+                        description: 'Hide your device identity from websites',
+                        value: _blockFingerprinting,
+                        onChanged: (val) {
+                          setState(() => _blockFingerprinting = val);
+                          setModalState(() => _blockFingerprinting = val);
+                        },
+                      ),
+                      _buildSettingsToggle(
+                        icon: Icons.cookie,
+                        label: 'Auto-Reject Cookies',
+                        description: 'Automatically decline cookie banners',
+                        value: _autoRejectCookies,
+                        onChanged: (val) {
+                          setState(() => _autoRejectCookies = val);
+                          setModalState(() => _autoRejectCookies = val);
+                        },
+                      ),
+                      _buildSettingsToggle(
+                        icon: Icons.lock,
+                        label: 'Upgrade to HTTPS',
+                        description: 'Force secure connections on all sites',
+                        value: _upgradeHttps,
+                        onChanged: (val) {
+                          setState(() => _upgradeHttps = val);
+                          setModalState(() => _upgradeHttps = val);
+                        },
+                      ),
+                      
+                      const SizedBox(height: 24),
+                      // --- Performance & Data ---
+                      _buildSettingsHeader(Icons.speed, 'Performance & Data'),
+                      _buildSettingsToggle(
+                        icon: Icons.offline_bolt,
+                        label: 'Data Saver Mode',
+                        description: 'Strip images and videos to save bandwidth',
+                        value: _dataSaverEnabled,
+                        activeColor: Colors.orangeAccent,
+                        onChanged: (val) {
+                          setState(() => _dataSaverEnabled = val);
+                          setModalState(() => _dataSaverEnabled = val);
+                          _tabs[_activeTabIndex].controller?.reload();
+                        },
+                      ),
+                      
+                      const SizedBox(height: 24),
+                      // --- Data Control ---
+                      _buildSettingsHeader(Icons.delete_sweep, 'Data Control'),
+                      _buildSupernovaButton(),
+                      _buildSettingsToggle(
+                        icon: Icons.exit_to_app,
+                        label: 'Clear Data on Exit',
+                        description: 'Wipe history and cache when closing app',
+                        value: _clearDataOnExit,
+                        activeColor: Colors.redAccent,
+                        onChanged: (val) {
+                          setState(() => _clearDataOnExit = val);
+                          setModalState(() => _clearDataOnExit = val);
+                        },
+                      ),
+
+                      const SizedBox(height: 24),
+                      // --- Appearance ---
+                      _buildSettingsHeader(Icons.palette, 'Appearance'),
+                      _buildSettingsToggle(
+                        icon: Icons.desktop_mac,
+                        label: 'Desktop Site',
+                        description: 'Request desktop version of websites',
+                        value: _desktopMode,
+                        onChanged: (val) {
+                          setState(() => _desktopMode = val);
+                          setModalState(() => _desktopMode = val);
+                          _tabs[_activeTabIndex].controller?.setUserAgent(val 
+                            ? 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36' 
+                            : null);
+                          _tabs[_activeTabIndex].controller?.reload();
+                        },
+                      ),
+                      _buildSettingsToggle(
+                        icon: Icons.dark_mode,
+                        label: 'Night Mode',
+                        description: 'Force dark theme on all websites',
+                        value: _nightMode,
+                        onChanged: (val) {
+                          setState(() => _nightMode = val);
+                          setModalState(() => _nightMode = val);
+                        },
+                      ),
+                      ListTile(
+                        contentPadding: EdgeInsets.zero,
+                        leading: const Icon(Icons.image, color: Colors.deepPurpleAccent),
+                        title: const Text('Custom Wallpaper', style: TextStyle(color: Colors.white)),
+                        subtitle: const Text('Set homepage background URL', style: TextStyle(color: Colors.white38)),
+                        trailing: const Icon(Icons.chevron_right, color: Colors.white54),
+                        onTap: () {
+                          // Simple prompt for wallpaper URL
+                          showDialog(
+                            context: context,
+                            builder: (context) => AlertDialog(
+                              backgroundColor: const Color(0xFF141414),
+                              title: const Text('Wallpaper URL', style: TextStyle(color: Colors.white)),
+                              content: TextField(
+                                style: const TextStyle(color: Colors.white),
+                                decoration: const InputDecoration(hintText: 'https://...', hintStyle: TextStyle(color: Colors.white38)),
+                                onSubmitted: (val) {
+                                  setState(() => _homepageWallpaper = val);
+                                  Navigator.pop(context);
+                                },
+                              ),
+                            ),
+                          );
+                        },
+                      ),
+                      const SizedBox(height: 40),
+                    ],
+                  ),
+                ),
+              ],
+            ),
+          );
+        }
+      ),
+    );
+  }
+
+  Widget _buildSettingsHeader(IconData icon, String title) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 12, left: 4),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: Colors.deepPurpleAccent),
+          const SizedBox(width: 8),
+          Text(title.toUpperCase(), style: const TextStyle(color: Colors.deepPurpleAccent, fontSize: 12, fontWeight: FontWeight.bold, letterSpacing: 1.2)),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsToggle({
+    required IconData icon,
+    required String label,
+    String? description,
+    required bool value,
+    required ValueChanged<bool> onChanged,
+    Color activeColor = Colors.deepPurpleAccent,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(16),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: value ? activeColor.withOpacity(0.2) : Colors.black54,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: value ? activeColor : Colors.white54, size: 20),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
+                if (description != null) ...[
+                  const SizedBox(height: 4),
+                  Text(description, style: TextStyle(color: Colors.white.withOpacity(0.4), fontSize: 12)),
+                ],
+              ],
+            ),
+          ),
+          Switch(
+            value: value,
+            onChanged: onChanged,
+            activeColor: activeColor,
+            activeTrackColor: activeColor.withOpacity(0.3),
+            inactiveThumbColor: Colors.white54,
+            inactiveTrackColor: Colors.white10,
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSettingsSelector({
+    required IconData icon,
+    required String label,
+    required String value,
+    required List<String> options,
+    required ValueChanged<String> onChanged,
+  }) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Colors.white.withOpacity(0.05),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: Colors.white.withOpacity(0.1)),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(10),
+            decoration: BoxDecoration(
+              color: Colors.black54,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: Icon(icon, color: Colors.white54, size: 20),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Text(label, style: const TextStyle(color: Colors.white, fontWeight: FontWeight.w500)),
+          ),
+          DropdownButton<String>(
+            value: value,
+            dropdownColor: const Color(0xFF1A1A1A),
+            underline: const SizedBox(),
+            icon: const Icon(Icons.arrow_drop_down, color: Colors.white54),
+            style: const TextStyle(color: Colors.deepPurpleAccent, fontWeight: FontWeight.bold),
+            onChanged: (String? newValue) {
+              if (newValue != null) onChanged(newValue);
+            },
+            items: options.map<DropdownMenuItem<String>>((String option) {
+              return DropdownMenuItem<String>(
+                value: option,
+                child: Text(option),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildSupernovaButton() {
+    return GestureDetector(
+      onTap: () {
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('Browsing data burned! ðŸ”¥'), backgroundColor: Colors.orange),
+        );
+      },
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 12),
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: Colors.orangeAccent.withOpacity(0.1),
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: Colors.orangeAccent.withOpacity(0.2)),
+        ),
+        child: Row(
+          children: [
+            Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: Colors.orangeAccent.withOpacity(0.2),
+                borderRadius: BorderRadius.circular(12),
+              ),
+              child: const Icon(Icons.local_fire_department, color: Colors.orangeAccent, size: 20),
+            ),
+            const SizedBox(width: 16),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Clear Browsing Data', style: TextStyle(color: Colors.orangeAccent, fontWeight: FontWeight.w600)),
+                  SizedBox(height: 4),
+                  Text('Instantly burn all history and cache', style: TextStyle(color: Colors.orangeAccent, fontSize: 12, opacity: 0.7)),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildToolbar() {
+    final activeTab = _tabs[_activeTabIndex];
+    final isIncognito = activeTab.isIncognito;
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        color: const Color(0xFF0A0A0A).withOpacity(0.95),
+        border: Border(
+          top: _toolbarPosition == 'bottom' ? const BorderSide(color: Colors.white10) : BorderSide.none,
+          bottom: _toolbarPosition == 'top' ? const BorderSide(color: Colors.white10) : BorderSide.none,
+        ),
+      ),
+      child: SafeArea(
+        top: _toolbarPosition == 'top',
+        bottom: _toolbarPosition == 'bottom',
+        child: Row(
+          children: [
+            IconButton(
+              icon: const Icon(Icons.arrow_back_ios, size: 20, color: Colors.white70),
+              onPressed: () async {
+                if (activeTab.controller != null && await activeTab.controller!.canGoBack()) {
+                  activeTab.controller!.goBack();
+                }
+              },
+            ),
+            IconButton(
+              icon: const Icon(Icons.arrow_forward_ios, size: 20, color: Colors.white70),
+              onPressed: () async {
+                if (activeTab.controller != null && await activeTab.controller!.canGoForward()) {
+                  activeTab.controller!.goForward();
+                }
+              },
+            ),
+            Expanded(
+              child: Container(
+                height: 44,
+                margin: const EdgeInsets.symmetric(horizontal: 8),
+                decoration: BoxDecoration(
+                  color: isIncognito ? Colors.redAccent.withOpacity(0.1) : Colors.white.withOpacity(0.1),
+                  borderRadius: BorderRadius.circular(22),
+                  border: Border.all(color: isIncognito ? Colors.redAccent.withOpacity(0.3) : Colors.white.withOpacity(0.05)),
+                ),
+                child: Row(
+                  children: [
+                    const SizedBox(width: 12),
+                    Icon(
+                      activeTab.url.isEmpty 
+                          ? Icons.search 
+                          : (isIncognito ? Icons.visibility_off : (_isSecure ? Icons.lock : Icons.lock_open)), 
+                      size: 14, 
+                      color: activeTab.url.isEmpty 
+                          ? Colors.white54 
+                          : (isIncognito ? Colors.redAccent : (_isSecure ? Colors.green : Colors.grey))
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: TextField(
+                        controller: _urlController,
+                        decoration: InputDecoration(
+                          hintText: 'Search or type URL',
+                          hintStyle: TextStyle(color: isIncognito ? Colors.redAccent.withOpacity(0.5) : Colors.white38, fontSize: 14),
+                          border: InputBorder.none,
+                          isDense: true,
+                          contentPadding: EdgeInsets.zero,
+                        ),
+                        style: TextStyle(fontSize: 14, color: isIncognito ? Colors.redAccent : Colors.white),
+                        keyboardType: TextInputType.url,
+                        textInputAction: TextInputAction.go,
+                        onSubmitted: (val) => _loadUrl(val),
+                      ),
+                    ),
+                    if (_dataSaverEnabled && activeTab.url.isNotEmpty)
+                      const Padding(
+                        padding: EdgeInsets.only(right: 12),
+                        child: Icon(Icons.offline_bolt, size: 16, color: Colors.orangeAccent),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            // Split Screen Button
+            IconButton(
+              icon: Icon(activeTab.splitUrl != null ? Icons.vertical_split : Icons.splitscreen, size: 20, color: activeTab.splitUrl != null ? Colors.deepPurpleAccent : Colors.white70),
+              onPressed: _toggleSplitScreen,
+            ),
+            GestureDetector(
+              onTap: () => setState(() => _showTabSwitcher = !_showTabSwitcher),
+              child: Container(
+                width: 36,
+                height: 36,
+                margin: const EdgeInsets.symmetric(horizontal: 4),
+                decoration: BoxDecoration(
+                  border: Border.all(color: isIncognito ? Colors.redAccent : Colors.white54, width: 2),
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Center(
+                  child: Text(
+                    '\${_tabs.length}',
+                    style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: isIncognito ? Colors.redAccent : Colors.white),
+                  ),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.menu, size: 24, color: Colors.white),
+              onPressed: _showSettingsMenu,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final activeTab = _tabs[_activeTabIndex];
+
+    Widget mainContent;
+    if (activeTab.url.isEmpty) {
+      mainContent = _buildHomepage();
+    } else if (activeTab.splitUrl != null && activeTab.splitController != null) {
+      // Split Screen Layout
+      mainContent = Column(
+        children: [
+          Expanded(child: WebViewWidget(controller: activeTab.controller!)),
+          Container(
+            height: 4,
+            color: Colors.deepPurpleAccent,
+            child: const Center(child: Icon(Icons.drag_handle, size: 12, color: Colors.white)),
+          ),
+          Expanded(child: WebViewWidget(controller: activeTab.splitController!)),
+        ],
+      );
+    } else {
+      mainContent = WebViewWidget(controller: activeTab.controller!);
+    }
+
+    return Scaffold(
+      body: Stack(
+        children: [
+          Column(
+            children: [
+              if (_toolbarPosition == 'top') _buildToolbar(),
+              if (_progress > 0 && _progress < 1)
+                LinearProgressIndicator(
+                  value: _progress,
+                  backgroundColor: Colors.transparent,
+                  color: activeTab.isIncognito ? Colors.redAccent : Colors.deepPurpleAccent,
+                  minHeight: 2,
+                ),
+              Expanded(child: mainContent),
+              if (_toolbarPosition == 'bottom') _buildToolbar(),
+            ],
+          ),
+          
+          // Tab Switcher Overlay
+          if (_showTabSwitcher)
+            Positioned.fill(
+              child: _buildTabSwitcher(),
+            ),
+        ],
+      ),
+    );
+  }
+}
