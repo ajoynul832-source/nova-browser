@@ -26,10 +26,25 @@ jobs:
       with:
         channel: 'stable'
 
-    - name: Generate Android System Files
+    - name: Prepare Flutter Project
       run: |
-        flutter create --platforms=android .
-        git checkout lib/main.dart pubspec.yaml
+        # 1. Generate the Android system files safely in a temp folder
+        flutter create temp_project
+        
+        # 2. Move the android folder into our main repository
+        mv temp_project/android ./
+        
+        # 3. Ensure the code is in the correct lib/main.dart location
+        mkdir -p lib
+        if [ -f "flutter_app.dart" ]; then
+          mv flutter_app.dart lib/main.dart
+        fi
+        
+        # 4. webview_flutter requires Android SDK 21+. This forces the upgrade.
+        sed -i 's/flutter.minSdkVersion/21/g' android/app/build.gradle
+        
+        # 5. Clean up the temp folder
+        rm -rf temp_project
 
     - name: Install dependencies
       run: flutter pub get
